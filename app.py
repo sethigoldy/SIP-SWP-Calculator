@@ -40,6 +40,7 @@ with st.sidebar:
     gross_return_text = st.text_input("Expected gross return % (you can list several e.g. 10,11,12)", value="12")
     ltcg = st.number_input("Long-term capital gains tax %", min_value=0.0, max_value=50.0, value=12.5, step=0.5, format="%.2f") / 100
     fees = st.number_input("Annual fees / expenses %", min_value=0.0, max_value=5.0, value=0.5, step=0.1, format="%.2f") / 100
+    initial_corpus = st.number_input("Existing corpus today (₹)", min_value=0.0, value=0.0, step=50000.0, help="Amount you already have invested toward this goal today.")
     sip_years = st.number_input("Years you will invest (SIP)", min_value=1, max_value=50, value=15, step=1)
     start_delay_years = sip_years  # withdrawals start right after accumulation
     preserve_corpus = st.checkbox("Keep the pot forever (don't run out)?", value=False, help="If unchecked we allow the pot to be spent over a fixed number of years.")
@@ -303,17 +304,28 @@ for g in gross_returns:
         mode = f"Finite {horizon_years}y"
     corpus_nominal_start = inflate(corpus_today, inflation, start_delay_years)
     sip_months = sip_years * 12
-    sip_amt = sip_required(corpus_nominal_start, accum_return_nominal, sip_months)
-    sip_amt = float(np.ceil(sip_amt))  # round up to next rupee for safety
+    # Future value of existing corpus after accumulation (annual comp approximation)
+    existing_future = initial_corpus * ((1 + accum_return_nominal) ** sip_years)
+    gap_start = max(0.0, corpus_nominal_start - existing_future)
+    if np.isinf(corpus_today):
+        sip_amt = float('inf')
+    elif gap_start <= 0:
+        sip_amt = 0.0
+    else:
+        sip_amt_raw = sip_required(gap_start, accum_return_nominal, sip_months)
+        sip_amt = float(np.ceil(sip_amt_raw))
     records.append({
         K_GROSS: g,
         K_NET: withdrawal_nominal,
         K_REAL: real_r,
-    K_CT: corpus_today,
-    K_CS: corpus_nominal_start,
+        K_CT: corpus_today,
+        K_CS: corpus_nominal_start,
         K_SIP: sip_amt,
         "Mode": mode,
-        "HorizonYears": horizon_years
+        "HorizonYears": horizon_years,
+        "ExistingToday": initial_corpus,
+        "ExistingFuture": existing_future,
+        "GapStart": gap_start
     })
 
  # (Step-by-step section moved below summary & schedules)
@@ -321,14 +333,17 @@ for g in gross_returns:
 st.header("Quick Summary")
 summary_df = pd.DataFrame([
     {
-        "Gross Return %": f"{r[K_GROSS]*100:.2f}",
-        "Net Nominal %": f"{r[K_NET]*100:.2f}",
+        "Gross %": f"{r[K_GROSS]*100:.2f}",
+        "Net %": f"{r[K_NET]*100:.2f}",
         "Real %": f"{r[K_REAL]*100:.2f}",
-    "Mode": r.get("Mode",""),
-    "Horizon (y)": (str(r.get("HorizonYears")) if r.get("HorizonYears") else ("∞" if preserve_corpus else "?")),
-    "Corpus Today": format_inr_compact(r[K_CT]) if not np.isinf(r[K_CT]) else "∞",
-    "Corpus Start": format_inr_compact(r[K_CS]) if not np.isinf(r[K_CT]) else "—",
-    "SIP / Month": format_inr_compact(r[K_SIP]) if not np.isinf(r[K_CT]) else "—",
+        "Mode": r.get("Mode",""),
+        "Horizon (y)": (str(r.get("HorizonYears")) if r.get("HorizonYears") else ("∞" if preserve_corpus else "?")),
+        "Corpus Today Req": format_inr_compact(r[K_CT]) if not np.isinf(r[K_CT]) else "∞",
+        "Existing Today": format_inr_compact(r.get("ExistingToday",0.0)),
+        "Corpus Start Req": format_inr_compact(r[K_CS]) if not np.isinf(r[K_CT]) else "—",
+        "Existing Future": format_inr_compact(r.get("ExistingFuture",0.0)) if not np.isinf(r[K_CT]) else "—",
+        "Gap @ Start": format_inr_compact(r.get("GapStart",0.0)) if not np.isinf(r[K_CT]) else "—",
+        "SIP / Month": ("0" if r[K_SIP]==0 else format_inr_compact(r[K_SIP])) if not np.isinf(r[K_CT]) else "—",
     } for r in records
 ])
 # ------------------------- KEY NUMBERS -------------------------
@@ -340,7 +355,8 @@ for idx, r in enumerate(records):
             st.metric(f"Scenario {idx+1} ({r[K_GROSS]*100:.0f}% Gross)", value="∞", help="Real return ≤ 0%")
         else:
             first_year_withdrawal_nominal = withdrawal_pa * ((1 + inflation) ** sip_years)
-            st.metric(label=f"Scenario {idx+1} SIP (₹/mo)", value=f"{r[K_SIP]} ({format_inr_compact(r[K_SIP])})")
+            sip_label_val = "0 (covered by existing)" if r[K_SIP]==0 else f"{r[K_SIP]} ({format_inr_compact(r[K_SIP])})"
+            st.metric(label=f"Scenario {idx+1} SIP (₹/mo)", value=sip_label_val)
             st.caption(f"First-year SWP (nominal, year {sip_years+1}): {format_inr_compact(first_year_withdrawal_nominal)}/yr ({format_inr_compact(first_year_withdrawal_nominal/12)}/mo)")
 
 st.caption("SIP values are rounded up. First withdrawal year shown in future (inflated) rupees.")
@@ -359,9 +375,12 @@ with st.expander("Diagnostics / Assumptions Detail"):
             "Accum Return %": f"{accum_return_nominal*100:.2f}",
             "Withdrawal Return %": f"{r[K_NET]*100:.2f}",
             "Real %": f"{r[K_REAL]*100:.2f}",
-            "Corpus Today": format_inr_compact(r[K_CT]) if not np.isinf(r[K_CT]) else "∞",
-            "Corpus Start": format_inr_compact(r[K_CS]) if not np.isinf(r[K_CT]) else "—",
-            "SIP (₹/mo)": format_inr_compact(r[K_SIP]) if not np.isinf(r[K_CT]) else "—",
+            "Corpus Today Req": format_inr_compact(r[K_CT]) if not np.isinf(r[K_CT]) else "∞",
+            "Existing Today": format_inr_compact(r.get("ExistingToday",0.0)),
+            "Corpus Start Req": format_inr_compact(r[K_CS]) if not np.isinf(r[K_CT]) else "—",
+            "Existing Future": format_inr_compact(r.get("ExistingFuture",0.0)) if not np.isinf(r[K_CT]) else "—",
+            "Gap @ Start": format_inr_compact(r.get("GapStart",0.0)) if not np.isinf(r[K_CT]) else "—",
+            "SIP (₹/mo)": ("0" if r[K_SIP]==0 else format_inr_compact(r[K_SIP])) if not np.isinf(r[K_CT]) else "—",
         })
     st.dataframe(pd.DataFrame(diag_rows), use_container_width=True)
     st.caption("Accum Return: nominal rate used for compounding during SIP phase. Withdrawal Return: nominal rate (after fees & tax) used for sustainability real-return calculation.")
@@ -380,7 +399,9 @@ if selected_index is not None:
         st.subheader("SIP Growth Phase")
         sip_months = sip_years * 12
         start_dt = date.today().replace(day=1)
-        sip_schedule = build_sip_schedule(sel[K_SIP], sel[K_NET], sip_months, 0.0, timing=contribution_timing, start_date=start_dt)
+    # Use existing corpus as starting amount
+    start_corpus_for_schedule = sel.get("ExistingToday", 0.0)
+    sip_schedule = build_sip_schedule(sel[K_SIP], sel[K_NET], sip_months, start_corpus_for_schedule, timing=contribution_timing, start_date=start_dt)
         sip_schedule_full = append_totals(sip_schedule)
         st.dataframe(format_schedule_for_display(sip_schedule_full), use_container_width=True)
         st.caption("Full SIP phase with totals row at bottom.")
@@ -488,8 +509,11 @@ for i, r in enumerate(records, start=1):
     with col2:
         st.markdown("**4. Grow that required pot by inflation until withdrawals begin.**")
     st.write(f"Pot needed at start of withdrawals ( nominal ): {format_inr_compact(r[K_CS])}")
-    st.markdown("**5. Work backwards to the monthly SIP that can build that pot.**")
-    st.write(f"Monthly SIP required: {format_inr_compact(r[K_SIP])}")
+    if r.get("ExistingToday",0)>0:
+        st.write(f"Existing corpus today grows to: {format_inr_compact(r.get('ExistingFuture',0.0))}")
+        st.write(f"Gap remaining at start: {format_inr_compact(r.get('GapStart',0.0))}")
+    st.markdown("**5. Work backwards to the monthly SIP that can build the remaining gap.**")
+    st.write(f"Monthly SIP required: {'0 (covered by existing corpus)' if r[K_SIP]==0 else format_inr_compact(r[K_SIP])}")
     with st.expander("Show formulas for this scenario"):
         st.markdown("**Formulas used**")
         st.latex(r"g_{net} = ((1+g_{gross})(1-fee)-1)\times(1-\text{tax})")
