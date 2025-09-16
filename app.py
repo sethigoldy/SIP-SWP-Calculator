@@ -399,9 +399,9 @@ if selected_index is not None:
         st.subheader("SIP Growth Phase")
         sip_months = sip_years * 12
         start_dt = date.today().replace(day=1)
-    # Use existing corpus as starting amount
-    start_corpus_for_schedule = sel.get("ExistingToday", 0.0)
-    sip_schedule = build_sip_schedule(sel[K_SIP], sel[K_NET], sip_months, start_corpus_for_schedule, timing=contribution_timing, start_date=start_dt)
+        # Use existing corpus as starting amount
+        start_corpus_for_schedule = sel.get("ExistingToday", 0.0)
+        sip_schedule = build_sip_schedule(sel[K_SIP], sel[K_NET], sip_months, start_corpus_for_schedule, timing=contribution_timing, start_date=start_dt)
         sip_schedule_full = append_totals(sip_schedule)
         st.dataframe(format_schedule_for_display(sip_schedule_full), use_container_width=True)
         st.caption("Full SIP phase with totals row at bottom.")
