@@ -2,6 +2,8 @@
 
 Probably the most realistic (yet still simplified) Indian SIP & SWP calculator for everyday planning.
 
+## Currently the App is hosted on [https://sip-swp.streamlit.app/](https://sip-swp.streamlit.app/)
+
 ## 1. What This Does
 
 You tell the app:
