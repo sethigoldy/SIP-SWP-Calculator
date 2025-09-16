@@ -1,6 +1,8 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+from datetime import date
+import calendar
 
 st.set_page_config(page_title="SIP & SWP Planner", layout="wide")
 
@@ -121,17 +123,24 @@ def sip_required(target_fv: float, annual_return: float, months: int) -> float:
     factor = ((1 + r_m) ** months - 1) / r_m
     return target_fv / factor
 
-def build_sip_schedule(monthly_sip: float, annual_return: float, months: int, start_corpus: float = 0.0, timing: str = "End of Month") -> pd.DataFrame:
-    """Build SIP accumulation schedule.
-    timing:
-      - "End of Month": growth on opening, then contribution (so month 1 opening = 0, closing = contribution).
-      - "Start of Month": contribution added first, then growth (slightly higher corpus trajectory).
-    Returns DataFrame including initial baseline row (Month 0) for clarity.
+def build_sip_schedule(monthly_sip: float, annual_return: float, months: int, start_corpus: float = 0.0, timing: str = "End of Month", start_date: date | None = None) -> pd.DataFrame:
+    """Build SIP accumulation schedule with calendar months.
+    MonthIndex: numeric sequence starting at 0 baseline, then 1..n
+    Month: calendar month short name (e.g., Oct)
+    Year: calendar year (e.g., 2025)
+    start_date: if provided, first contribution month (MonthIndex=1) uses its month/year.
+    timing semantics unchanged.
     """
+    if start_date is None:
+        start_date = date.today().replace(day=1)
+    # baseline row (MonthIndex 0) uses the month prior to start_date for clarity
+    baseline_month = (start_date.month - 1) if start_date.month > 1 else 12
+    baseline_year = start_date.year if start_date.month > 1 else start_date.year - 1
     r_m = (1 + annual_return) ** (1/12) - 1
     rows = [{
-        "Month": 0,
-        "Year": 0,
+        "MonthIndex": 0,
+        "Month": calendar.month_abbr[baseline_month],
+        "Year": baseline_year,
         "Opening": start_corpus,
         "Contribution": 0.0,
         "Growth": 0.0,
@@ -139,51 +148,63 @@ def build_sip_schedule(monthly_sip: float, annual_return: float, months: int, st
         "Closing": start_corpus
     }]
     corpus = start_corpus
-    for m in range(1, months + 1):
-        year_val = (m - 1)//12 + 1
+    cur_year = start_date.year
+    cur_month = start_date.month
+    for idx in range(1, months + 1):
         opening = corpus
         if timing == "Start of Month":
-            # contribute first
             contribution = monthly_sip
             corpus = corpus + contribution
             growth = corpus * r_m
             corpus = corpus + growth
         else:
-            # End of month (default earlier logic): growth then contribution
             growth = corpus * r_m
             contribution = monthly_sip
             corpus = corpus + growth + contribution
         rows.append({
-            "Month": m,
-            "Year": year_val,
+            "MonthIndex": idx,
+            "Month": calendar.month_abbr[cur_month],
+            "Year": cur_year,
             "Opening": opening,
             "Contribution": contribution,
             "Growth": growth,
             "Withdrawal": 0.0,
             "Closing": corpus
         })
+        # advance month
+        if cur_month == 12:
+            cur_month = 1
+            cur_year += 1
+        else:
+            cur_month += 1
     return pd.DataFrame(rows)
 
-def build_swp_schedule(start_corpus: float, annual_return: float, annual_inflation: float, base_withdrawal_pm_today: float, years: int, start_year_index: int = 1) -> pd.DataFrame:
-    """Build withdrawal schedule with inflation-adjusted monthly withdrawals.
-    Withdrawal for year y (1-indexed) in nominal terms: base_withdrawal_pm_today * (1+infl)^{(y_start + y -2)}.
-    Withdrawal at END of month (after growth), similar timing assumption.
+def build_swp_schedule(start_corpus: float, annual_return: float, annual_inflation: float, base_withdrawal_pm_today: float, years: int, start_calendar_date: date, start_year_index: int = 1, starting_month_index: int = 0) -> pd.DataFrame:
+    """Build withdrawal schedule with calendar months.
+    start_calendar_date: first withdrawal month (first month after accumulation phase).
+    MonthIndex continues from SIP schedule (pass last MonthIndex) + 1 for first SWP month.
+    Year column now reflects actual calendar year, but we also keep EffectiveYear for inflation escalation logic (financial year count since start of SIP+1).
     """
     months = years * 12
     r_m = (1 + annual_return) ** (1/12) - 1
     rows = []
     corpus = start_corpus
+    cur_year = start_calendar_date.year
+    cur_month = start_calendar_date.month
+    base_month_index = starting_month_index
     for m in range(1, months + 1):
+        month_index = base_month_index + m
         year_index = (m - 1)//12 + 1
         effective_year = start_year_index + year_index - 1
         opening = corpus
         growth = opening * r_m
-        # monthly withdrawal for this year (inflated)
         withdrawal_nominal = base_withdrawal_pm_today * ((1 + annual_inflation) ** (effective_year - 1))
         corpus = opening + growth - withdrawal_nominal
         rows.append({
-            "Month": m,
-            "Year": effective_year,
+            "MonthIndex": month_index,
+            "Month": calendar.month_abbr[cur_month],
+            "Year": cur_year,
+            "EffectiveYear": effective_year,
             "Opening": opening,
             "Contribution": 0.0,
             "Growth": growth,
@@ -192,6 +213,12 @@ def build_swp_schedule(start_corpus: float, annual_return: float, annual_inflati
         })
         if corpus < 0:
             break
+        # advance calendar month
+        if cur_month == 12:
+            cur_month = 1
+            cur_year += 1
+        else:
+            cur_month += 1
     return pd.DataFrame(rows)
 
 def append_totals(df: pd.DataFrame) -> pd.DataFrame:
@@ -202,8 +229,10 @@ def append_totals(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df.empty:
         return df
+    # Determine id columns present
     totals = {
-        "Month": "Total",
+        "MonthIndex": "Total" if 'MonthIndex' in df.columns else "Total",
+        "Month": "-" if 'Month' in df.columns else None,
         "Year": "-",
         "Opening": "-",
         "Contribution": df['Contribution'].sum(),
@@ -211,6 +240,8 @@ def append_totals(df: pd.DataFrame) -> pd.DataFrame:
         "Withdrawal": df['Withdrawal'].sum(),
         "Closing": "-"
     }
+    # Remove None keys
+    totals = {k: v for k, v in totals.items() if k in df.columns}
     return pd.concat([df, pd.DataFrame([totals])], ignore_index=True)
 
 # ------------------------- FORMATTING HELPERS -------------------------
@@ -348,7 +379,8 @@ if selected_index is not None:
     else:
         st.subheader("SIP Growth Phase")
         sip_months = sip_years * 12
-        sip_schedule = build_sip_schedule(sel[K_SIP], sel[K_NET], sip_months, 0.0, timing=contribution_timing)
+        start_dt = date.today().replace(day=1)
+        sip_schedule = build_sip_schedule(sel[K_SIP], sel[K_NET], sip_months, 0.0, timing=contribution_timing, start_date=start_dt)
         sip_schedule_full = append_totals(sip_schedule)
         st.dataframe(format_schedule_for_display(sip_schedule_full), use_container_width=True)
         st.caption("Full SIP phase with totals row at bottom.")
@@ -360,7 +392,24 @@ if selected_index is not None:
         if not preserve_corpus and finite_horizon_years:
             default_swp_years = int(finite_horizon_years)
         swp_years = st.number_input("SWP projection years (after accumulation)", min_value=1, max_value=60, value=default_swp_years, step=1)
-        swp_schedule = build_swp_schedule(sel[K_CS], sel[K_NET], inflation, withdrawal_pm, swp_years, start_year_index=sip_years+1)
+        # Determine first SWP calendar month: month after last SIP month
+        if not sip_schedule.empty:
+            last_sip_year = int(sip_schedule.iloc[-1]['Year'])
+            last_sip_month_abbr = sip_schedule.iloc[-1]['Month']
+            # Map month abbr back to month number
+            month_map = {calendar.month_abbr[i]: i for i in range(1,13)}
+            last_sip_month_num = month_map.get(last_sip_month_abbr, date.today().month)
+            if last_sip_month_num == 12:
+                swp_start_month = 1
+                swp_start_year = last_sip_year + 1
+            else:
+                swp_start_month = last_sip_month_num + 1
+                swp_start_year = last_sip_year
+            swp_start_date = date(swp_start_year, swp_start_month, 1)
+        else:
+            swp_start_date = date.today().replace(day=1)
+        last_month_index = int(sip_schedule['MonthIndex'].iloc[-1]) if 'MonthIndex' in sip_schedule.columns else sip_months
+        swp_schedule = build_swp_schedule(sel[K_CS], sel[K_NET], inflation, withdrawal_pm, swp_years, start_calendar_date=swp_start_date, start_year_index=sip_years+1, starting_month_index=last_month_index)
         swp_schedule_full = append_totals(swp_schedule)
         st.dataframe(format_schedule_for_display(swp_schedule_full), use_container_width=True)
         st.caption("Full withdrawal phase with totals row (total withdrawals shown).")
@@ -373,44 +422,30 @@ if selected_index is not None:
             combined = sip_schedule.copy()
             combined['Phase'] = 'SIP'
             swp_temp = swp_schedule.copy()
-            swp_temp['Month'] += sip_months
             swp_temp['Phase'] = 'SWP'
             combined = pd.concat([combined, swp_temp], ignore_index=True)
             chart = alt.Chart(combined).mark_line().encode(
-                x=alt.X('Month:Q'),
+                x=alt.X('MonthIndex:Q', title='Month Index'),
                 y=alt.Y('Closing:Q', title='Corpus (₹)'),
                 color='Phase'
             ).properties(height=300)
             st.altair_chart(chart, use_container_width=True)
 
             # Yearly aggregation chart
-            total_years = sip_years + swp_years
-            # Build yearly data: end-of-year closing corpus (month multiples of 12)
+            # Build yearly data using calendar year end (December) closings
+            combined_sorted = combined.sort_values('MonthIndex')
             yearly_points = []
-            for year in range(0, total_years + 1):
-                if year == 0:
-                    closing = 0.0
-                elif year <= sip_years:
-                    # SIP schedule includes baseline month 0; year *12 row gives closing
-                    row = sip_schedule[sip_schedule['Month'] == year * 12]
-                    if not row.empty:
-                        closing = float(row['Closing'].iloc[0])
-                    else:
-                        closing = float(sip_schedule['Closing'].iloc[-1])
-                else:
-                    year_in_swp = year - sip_years
-                    # swp_schedule year numbering starts at sip_years+1 -> effective year = sip_years + year_in_swp
-                    target_year = sip_years + year_in_swp
-                    # pick last month of that calendar year within swp schedule
-                    subset = swp_schedule[swp_schedule['Year'] == target_year]
-                    if not subset.empty:
-                        closing = float(subset['Closing'].iloc[-1])
-                    else:
-                        closing = float(swp_schedule['Closing'].iloc[-1]) if not swp_schedule.empty else 0.0
-                yearly_points.append({"Year": year, "Corpus": closing})
+            # include initial baseline year start
+            baseline_year = int(sip_schedule.iloc[0]['Year']) if not sip_schedule.empty else date.today().year
+            yearly_points.append({"CalendarYear": baseline_year - 1, "Corpus": 0.0})
+            for yr in sorted(combined['Year'].unique()):
+                subset = combined_sorted[combined_sorted['Year'] == yr]
+                if not subset.empty:
+                    closing = float(subset.iloc[-1]['Closing'])
+                    yearly_points.append({"CalendarYear": yr, "Corpus": closing})
             yearly_df = pd.DataFrame(yearly_points)
             yearly_chart = alt.Chart(yearly_df).mark_bar(color='#4e79a7').encode(
-                x=alt.X('Year:O', title='Year (0 = Start)'),
+                x=alt.X('CalendarYear:O', title='Calendar Year'),
                 y=alt.Y('Corpus:Q', title='End-of-Year Corpus (₹)')
             ).properties(height=300)
             st.subheader("Year-End Corpus (Each Year)")
