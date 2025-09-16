@@ -33,17 +33,17 @@ Always sanity‑check results and talk to a qualified advisor for real decisions
 # ------------------------- INPUTS -------------------------
 with st.sidebar:
     st.header("Inputs")
-    withdrawal_pm = st.number_input("Income you want per month (today ₹)", min_value=10000, value=150000, step=5000)
-    inflation = st.number_input("Inflation (%)", min_value=0.0, value=6.5, step=0.1, format="%.2f") / 100
+    withdrawal_pm = st.number_input("Income you want per month (today ₹)", min_value=10000, value=100000, step=5000)
+    inflation = st.number_input("Inflation (%) (6.5 is the real number in India for last 20 years)", min_value=0.0, value=6.5, step=0.1, format="%.2f") / 100
     gross_return_text = st.text_input("Expected gross return % (you can list several e.g. 10,11,12)", value="12")
     ltcg = st.number_input("Long-term capital gains tax %", min_value=0.0, max_value=50.0, value=12.5, step=0.5, format="%.2f") / 100
-    fees = st.number_input("Annual fees / expenses %", min_value=0.0, max_value=5.0, value=1.0, step=0.1, format="%.2f") / 100
-    sip_years = st.number_input("Years you will invest (SIP)", min_value=1, max_value=50, value=10, step=1)
+    fees = st.number_input("Annual fees / expenses %", min_value=0.0, max_value=5.0, value=0.5, step=0.1, format="%.2f") / 100
+    sip_years = st.number_input("Years you will invest (SIP)", min_value=1, max_value=50, value=15, step=1)
     start_delay_years = sip_years  # withdrawals start right after accumulation
-    preserve_corpus = st.checkbox("Keep the pot forever (don't run out)?", value=True, help="If unchecked we allow the pot to be spent over a fixed number of years.")
+    preserve_corpus = st.checkbox("Keep the pot forever (don't run out)?", value=False, help="If unchecked we allow the pot to be spent over a fixed number of years.")
     finite_horizon_years = None
     if not preserve_corpus:
-        finite_horizon_years = st.number_input("How many years should it last?", min_value=1, max_value=100, value=30, step=1, help="After this many years the pot can be near zero.")
+        finite_horizon_years = st.number_input("How many years should it last?", min_value=1, max_value=100, value=20, step=1, help="After this many years the pot can be near zero.")
     perpetuity_buffer = st.number_input("Extra safety cushion (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0, help="Add more if you want a margin for error.") / 100
     apply_tax_during_accum = st.checkbox("Apply tax drag during growth phase?", value=True, help="Uncheck if you want to ignore tax until withdrawals (optimistic).")
     contribution_timing = st.selectbox("When is SIP added each month?", ["End of Month", "Start of Month"], help="Start = a bit more growth.")
